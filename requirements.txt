@@ -1,4 +1,6 @@
 streamlit
+streamlit-webrtc
+av
 opencv-python-headless
 mediapipe==0.10.11
 protobuf<4.24.0
