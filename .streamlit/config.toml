@@ -1,0 +1,2 @@
+[server]
+maxUploadSize = 1000  # Coba set ke 1000 (1GB)
