@@ -133,7 +133,6 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         self.start_time = time.time()
         self.total_bursts = 0
         
-        # Variabel publik untuk dibaca oleh antarmuka Streamlit
         self.perclos_live = 0.0
         self.mcd_live = 0.0
         self.freq_kedipan = 0
@@ -468,12 +467,11 @@ elif st.session_state.halaman == "analisis":
                 os.remove(tfile.name)
 
     # ------------------------------------------
-    # TAB 2: LIVE KAMERA WEBRTC (LAYOUT DIKEMBALIKAN)
+    # TAB 2: LIVE KAMERA WEBRTC
     # ------------------------------------------
     with tab2:
         st.markdown("### Uji Coba Langsung (3 Menit) via WebRTC")
         
-        # 1. TATA LETAK INPUT (Sama seperti app_web3.py)
         col_live1, col_live2 = st.columns(2)
         with col_live1:
             id_kerja_live = st.text_input("ID Kerja", key="id_live")
@@ -520,12 +518,10 @@ elif st.session_state.halaman == "analisis":
         st.markdown("---")
         st.info("💡 **Langkah:** Pastikan data Anda terisi. Klik tombol **'START'** di bawah ini untuk mengizinkan kamera dan memulai waktu tes 3 menit.")
 
-        # Inisialisasi State Penyimpanan Zip
         if "live_test_completed" not in st.session_state:
             st.session_state.live_test_completed = False
             st.session_state.live_zip_path = ""
 
-        # 2. TATA LETAK KAMERA & METRIK (Sama seperti app_web3.py)
         yt_ph = st.empty()
         p_text = st.empty()
         p_bar = st.empty()
@@ -550,7 +546,6 @@ elif st.session_state.halaman == "analisis":
             perclos_ui2 = m7.empty(); mcd_ui2 = m8.empty(); blink_ui2 = m9.empty()
             dur_ui2 = m10.empty(); ms_ui2 = m11.empty()
 
-        # 3. LOGIKA UPDATE SAAT KAMERA MENYALA
         if ctx.state.playing and nama_live != "":
             with yt_ph:
                 components.html(
@@ -559,12 +554,10 @@ elif st.session_state.halaman == "analisis":
                 )
             p_bar_elem = p_bar.progress(0)
             
-            # Waktu mulai (jangan reset jika Streamlit rerun)
             if "webrtc_start_time" not in st.session_state or st.session_state.webrtc_start_time == 0:
                 st.session_state.webrtc_start_time = time.time()
-                st.session_state.live_test_completed = False # Reset status jika baru mulai
+                st.session_state.live_test_completed = False
                 
-            # Loop Update UI (Membaca data dari WebRTC Thread)
             while ctx.state.playing:
                 elapsed = time.time() - st.session_state.webrtc_start_time
                 if elapsed >= 180.0:
@@ -596,7 +589,6 @@ elif st.session_state.halaman == "analisis":
                     
                 time.sleep(0.5)
 
-        # 4. KONDISI SETELAH 3 MENIT SELESAI
         if st.session_state.get("live_test_completed"):
             p_bar.progress(1.0)
             yt_ph.empty() 
@@ -606,6 +598,5 @@ elif st.session_state.halaman == "analisis":
             with open(st.session_state.live_zip_path, "rb") as f:
                 st.download_button("📦 Download Laporan (ZIP)", data=f, file_name=st.session_state.live_zip_path, mime="application/zip")
 
-        # Reset Waktu jika pengguna mematikan Kamera (Stop)
         if not ctx.state.playing:
             st.session_state.webrtc_start_time = 0
