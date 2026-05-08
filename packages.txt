@@ -1,2 +1,2 @@
 tesseract-ocr
-libgl1
+libgl1-mesa-glx
