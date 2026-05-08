@@ -9,3 +9,4 @@ pandas
 Pillow
 openpyxl
 numpy
+tornado
