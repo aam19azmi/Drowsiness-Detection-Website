@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import cv2
 import tempfile
 import os
@@ -251,6 +250,9 @@ def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_
         success, frame = cap.read()
         if not success: break
         
+        # MENCEGAH HEALTH CHECK TIMEOUT SERVER STREAMLIT
+        time.sleep(0.001)
+        
         frame_count += 1
         time_sec = frame_count / fps
         if crop_end > 0.0 and time_sec >= absolute_stop_time: break
@@ -381,13 +383,13 @@ if st.session_state.halaman == "beranda":
     
     with col_menu1:
         st.info("👁️ **Analisis FFD (MediaPipe)**\n\nPengujian tingkat kewaspadaan berbasis deteksi biometrik wajah.")
-        if st.button("Masuk ke Modul Analisis FFD", type="primary", use_container_width=True):
+        if st.button("Masuk ke Modul Analisis FFD", type="primary", width="stretch"):
             pindah_halaman("analisis")
             st.rerun()
             
     with col_menu2:
         st.warning("⏱️ **PVT Task (Vigilance)**\n\nPengujian waktu reaksi (Reaction Time) kognitif.")
-        st.link_button("Buka Modul PVT Task", "https://pvt-v3.vercel.app/auth", use_container_width=True)
+        st.link_button("Buka Modul PVT Task", "https://pvt-v3.vercel.app/auth", width="stretch")
 
 elif st.session_state.halaman == "analisis":
     if st.button("⬅️ Kembali ke Menu Utama"):
@@ -425,7 +427,7 @@ elif st.session_state.halaman == "analisis":
         crop_end_sec = val_end if unit_end == "Detik" else val_end * 60.0
 
         if uploaded_file is not None:
-            if st.button("▶ Mulai Analisis Video & Buat Laporan", type="primary", use_container_width=True):
+            if st.button("▶ Mulai Analisis Video & Buat Laporan", type="primary", width="stretch"):
                 col_vid, col_stat = st.columns([2, 1])
                 with col_vid: vid_ph = st.empty()
                 with col_stat:
@@ -445,7 +447,7 @@ elif st.session_state.halaman == "analisis":
                     if isinstance(frame, str) and frame == "DONE": 
                         excel_result = status; video_result = perclos; break
                         
-                    vid_ph.image(frame, channels="RGB", use_container_width=True)
+                    vid_ph.image(frame, channels="RGB", width="stretch")
                     if "BAHAYA" in status: status_ui.error(f"🚨 **{status}**")
                     elif "LELAH" in status: status_ui.warning(f"⚠️ **{status}**")
                     else: status_ui.success(f"✅ **{status}**")
@@ -464,7 +466,11 @@ elif st.session_state.halaman == "analisis":
                 if os.path.exists(zip_name_up):
                     with open(zip_name_up, "rb") as f:
                         st.download_button("📦 Download Paket Bukti (ZIP)", data=f, file_name=zip_name_up, mime="application/zip")
+                
+                # PEMBERSIHAN MEMORI (MENCEGAH SERVER CRASH!)
                 os.remove(tfile.name)
+                if os.path.exists(excel_result): os.remove(excel_result)
+                if os.path.exists(video_result): os.remove(video_result)
 
     # ------------------------------------------
     # TAB 2: LIVE KAMERA WEBRTC
@@ -516,7 +522,7 @@ elif st.session_state.halaman == "analisis":
             status_live = st.selectbox("Status Pengujian", ["Pre-Shift", "Post-Shift", "Fatigue testing"], key="stat2")
 
         st.markdown("---")
-        st.info("💡 **Langkah:** Pastikan data Anda terisi. Klik tombol **'START'** di bawah ini untuk mengizinkan kamera dan memulai waktu tes 3 menit.")
+        st.info("💡 **Langkah:** Pastikan data Anda terisi. Klik tombol **'START'** di bawah ini untuk mengizinkan kamera dan memulai waktu tes 3 Menit.")
 
         if "live_test_completed" not in st.session_state:
             st.session_state.live_test_completed = False
@@ -548,9 +554,9 @@ elif st.session_state.halaman == "analisis":
 
         if ctx.state.playing and nama_live != "":
             with yt_ph:
-                components.html(
+                st.markdown(
                     """<iframe width="100%" height="400" src="https://www.youtube.com/embed/Se5NjX-cM5I?si=__OUHuj-V2w_wi4J&autoplay=1" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>""",
-                    height=400
+                    unsafe_allow_html=True
                 )
             p_bar_elem = p_bar.progress(0)
             
