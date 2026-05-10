@@ -50,6 +50,7 @@ FACE_3D = np.array([
     [150.0, -150.0, -125.0]     
 ], dtype=np.float64)
 
+# Konfigurasi Server Cadangan (Mencegah Error WebRTC)
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [
         {"urls": ["stun:stun.l.google.com:19302"]},
@@ -84,7 +85,7 @@ def calculate_mar(landmarks, frame_w, frame_h, idxs):
 def calculate_gaze_ratio(landmarks, frame_w, frame_h):
     return landmarks[LEFT_IRIS_CENTER].x
 
-def generate_excel_from_vp(vp, excel_name, id_kerja, nama_pegawai, jenis_kelamin, usia, status_shift):
+def generate_excel_from_vp(vp, excel_name, id_kerja, nama_pegawai, jenis_kelamin, usia, status_shift, img_path=""):
     output_rows = []
     output_rows.append(["ID Kerja", "Nama", "Jenis Kelamin", "Usia", "Screenshot", "Waktu Mulai Tutup", "Waktu Tertutup", "Waktu Mulai Buka", 
                         "Waktu Buka Penuh", "Closed Phase", "Closing Phase", "Reopening Phase", 
@@ -120,8 +121,19 @@ def generate_excel_from_vp(vp, excel_name, id_kerja, nama_pegawai, jenis_kelamin
                 0 if idx == 0 else "", 0 if idx == 0 else "", 0 if idx == 0 else "",
                 vp.status if idx == 0 else "", status_shift if idx == 0 else ""
             ])
+            
     df = pd.DataFrame(output_rows)
     df.to_excel(excel_name, index=False, header=False)
+    
+    if img_path and os.path.exists(img_path):
+        wb = load_workbook(excel_name)
+        ws = wb.active
+        ws.column_dimensions['E'].width = 25 
+        ws.row_dimensions[3].height = 80 
+        img = ExcelImage(img_path)
+        ws.add_image(img, 'E3')
+        wb.save(excel_name)
+        
     return excel_name
 
 # ==========================================
@@ -138,10 +150,12 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         self.start_time = time.time()
         self.total_bursts = 0
         
-        # Variabel Logika CROP (Jeda Analisis)
+        # Pengaturan Jeda/Berhenti Real-Time
         self.crop_start = 0.0
-        self.crop_end = 0.0
-        self.max_duration = 180.0
+        self.crop_end = 180.0
+        self.nama_pegawai = "Unknown"
+        self.thumbnail_saved = False
+        self.thumbnail_path = ""
         
         self.perclos_live = 0.0
         self.mcd_live = 0.0
@@ -157,25 +171,29 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         
         elapsed_total = time.time() - self.start_time
 
-        # --- LOGIKA FITUR CROP (JEDA) LIVE ---
+        # --- LOGIKA FITUR JEDA (CROP) KAMERA LANGSUNG ---
         if elapsed_total < self.crop_start:
-            # Masa Tunggu (Crop Awal)
             cv2.putText(bgr_out, f"MEMULAI ANALISIS DALAM: {int(self.crop_start - elapsed_total)}s", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             return av.VideoFrame.from_ndarray(bgr_out, format="bgr24")
             
-        if elapsed_total > (self.max_duration - self.crop_end):
-            # Masa Berhenti Dini (Crop Akhir)
-            cv2.putText(bgr_out, "ANALISIS SELESAI (Crop Akhir Aktif)", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        if elapsed_total > self.crop_end:
+            cv2.putText(bgr_out, "ANALISIS SELESAI...", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             return av.VideoFrame.from_ndarray(bgr_out, format="bgr24")
-        # -------------------------------------
+        # ------------------------------------------------
 
         self.frame_count += 1
-        time_sec = elapsed_total - self.crop_start # Hitung murni waktu setelah crop
+        time_sec = elapsed_total - self.crop_start # Jadikan detik ke-0 mulai dari titik pemotongan
         
         rgb_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         results = self.face_mesh.process(rgb_frame)
 
         if results.multi_face_landmarks:
+            # Ambil Screenshot Otomatis untuk Laporan Excel
+            if not self.thumbnail_saved:
+                self.thumbnail_path = f"web_thumb_live_{self.nama_pegawai}.jpg"
+                cv2.imwrite(self.thumbnail_path, cv2.resize(img, (150, 100)))
+                self.thumbnail_saved = True
+
             landmarks = results.multi_face_landmarks[0].landmark
             mp_drawing.draw_landmarks(
                 image=bgr_out,
@@ -242,13 +260,12 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(bgr_out, format="bgr24")
 
 # ==========================================
-# 4. FUNGSI UPLOAD VIDEO (Optimasi RAM & Jaringan)
+# 4. FUNGSI UPLOAD VIDEO (Optimasi RAM)
 # ==========================================
 def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_kelamin="-", usia=0, status_shift="Tidak Diketahui", crop_start=0.0, crop_end=0.0):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     
-    # OPTIMASI: Turunkan resolusi video ke 480p di awal untuk mencegah RAM meledak
     orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     width = 640
@@ -256,7 +273,11 @@ def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_
     
     total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
     total_duration = total_frames / fps if fps > 0 else 0
-    absolute_stop_time = total_duration - crop_end
+    
+    # Logika Potong Video Terbaru (Menit Mutlak Berhenti)
+    absolute_stop_time = crop_end if crop_end > 0.0 else total_duration
+    if absolute_stop_time <= crop_start: # Jika salah ketik waktu, fallback ke full
+        absolute_stop_time = total_duration
 
     video_out_name = f"Rekaman_{nama_pegawai}.mp4"
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -280,20 +301,22 @@ def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_
         success, frame = cap.read()
         if not success: break
         
-        # MENCEGAH HEALTH CHECK TIMEOUT SERVER STREAMLIT
         time.sleep(0.001)
         
         frame_count += 1
-        time_sec = frame_count / fps
-        if crop_end > 0.0 and time_sec >= absolute_stop_time: break
+        time_sec_real = frame_count / fps
+        
+        if time_sec_real >= absolute_stop_time: 
+            break
+            
+        time_sec_relative = time_sec_real - crop_start 
 
-        # Resize untuk meringankan CPU
         frame = cv2.resize(frame, (width, height))
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = face_mesh_up.process(rgb_frame)
 
         if results.multi_face_landmarks:
-            if not thumbnail_saved and frame_count > 15: 
+            if not thumbnail_saved and frame_count > (int(crop_start * fps) + 15): 
                 cv2.imwrite(temp_img_path, cv2.resize(frame, (150, 100)))
                 thumbnail_saved = True
 
@@ -302,9 +325,9 @@ def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_
 
             mar_val, _ = calculate_mar(landmarks, width, height, MOUTH)
             if mar_val > MAR_THRESH:
-                if not is_yawning: is_yawning, yawn_start_time = True, time_sec
+                if not is_yawning: is_yawning, yawn_start_time = True, time_sec_relative
             else:
-                if is_yawning and (time_sec - yawn_start_time) > YAWN_MIN_TIME: total_yawns += 1
+                if is_yawning and (time_sec_relative - yawn_start_time) > YAWN_MIN_TIME: total_yawns += 1
                 is_yawning = False
 
             l_ear, _ = calculate_ear(landmarks, width, height, LEFT_EYE)
@@ -313,15 +336,15 @@ def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_
 
             if ear_avg <= EAR_P80: p80_frames += 1
 
-            if state == 0 and ear_avg < EAR_HIGH: t1, state = time_sec, 1
+            if state == 0 and ear_avg < EAR_HIGH: t1, state = time_sec_relative, 1
             elif state == 1:
-                if ear_avg <= EAR_LOW: t2, state = time_sec, 2
+                if ear_avg <= EAR_LOW: t2, state = time_sec_relative, 2
                 elif ear_avg >= EAR_HIGH: state = 0
             elif state == 2:
-                if ear_avg > EAR_LOW: t3, state = time_sec, 3
+                if ear_avg > EAR_LOW: t3, state = time_sec_relative, 3
             elif state == 3:
                 if ear_avg >= EAR_HIGH:
-                    t4 = time_sec
+                    t4 = time_sec_relative
                     interval = (t1 - blinks[-1]['t4']) if len(blinks) > 0 else 0
                     if 0 < interval < 1.0: total_bursts += 1
                     blinks.append({
@@ -357,7 +380,6 @@ def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_
         
         out_video.write(bgr_out) 
         
-        # OPTIMASI UI: Mengirimkan (yield) frame ke UI secara sepotong-sepotong (tiap 5 frame)
         if frame_count % 5 == 0:
             yield rgb_frame, status, perclos_live, mcd_live, freq_kedipan, avg_blink_dur, total_ms_live
 
@@ -454,10 +476,12 @@ elif st.session_state.halaman == "analisis":
         uploaded_file = st.file_uploader("Upload video evaluasi", type=['mp4', 'avi', 'mov'])
         st.markdown("#### ✂️ Pengaturan Pemotongan Video (Crop)")
         c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
-        val_start = c1.number_input("Buang/Potong bagian AWAL:", min_value=0.0, value=0.0, step=1.0)
+        val_start = c1.number_input("Mulai Analisis pada (Waktu Awal):", min_value=0.0, value=0.0, step=1.0)
         unit_start = c2.selectbox("Satuan Awal", ["Detik", "Menit"], key="unit_start")
-        val_end = c3.number_input("Buang/Potong bagian AKHIR:", min_value=0.0, value=0.0, step=1.0)
+        val_end = c3.number_input("Berhenti Analisis pada (Waktu Akhir):", min_value=0.0, value=0.0, step=1.0)
         unit_end = c4.selectbox("Satuan Akhir", ["Detik", "Menit"], key="unit_end")
+        st.caption("*Catatan: Jika waktu Akhir disetel angka 0, maka AI akan menganalisis sampai video habis.*")
+        
         crop_start_sec = val_start if unit_start == "Detik" else val_start * 60.0
         crop_end_sec = val_end if unit_end == "Detik" else val_end * 60.0
 
@@ -482,7 +506,6 @@ elif st.session_state.halaman == "analisis":
                     if isinstance(frame, str) and frame == "DONE": 
                         excel_result = status; video_result = perclos; break
                         
-                    # Menggambar di Web hanya terjadi sebagian kali (Lebih Cepat!)
                     vid_ph.image(frame, channels="RGB", width="stretch")
                     if "BAHAYA" in status: status_ui.error(f"🚨 **{status}**")
                     elif "LELAH" in status: status_ui.warning(f"⚠️ **{status}**")
@@ -503,7 +526,6 @@ elif st.session_state.halaman == "analisis":
                     with open(zip_name_up, "rb") as f:
                         st.download_button("📦 Download Paket Bukti (ZIP)", data=f, file_name=zip_name_up, mime="application/zip")
                 
-                # PEMBERSIHAN MEMORI
                 os.remove(tfile.name)
                 if os.path.exists(excel_result): os.remove(excel_result)
                 if os.path.exists(video_result): os.remove(video_result)
@@ -512,7 +534,7 @@ elif st.session_state.halaman == "analisis":
     # TAB 2: LIVE KAMERA WEBRTC
     # ------------------------------------------
     with tab2:
-        st.markdown("### Uji Coba Langsung (3 Menit) via WebRTC")
+        st.markdown("### Uji Coba Langsung via WebRTC")
         
         col_live1, col_live2 = st.columns(2)
         with col_live1:
@@ -557,18 +579,19 @@ elif st.session_state.halaman == "analisis":
             st.caption(f"Usia saat ini: {usia_live} Tahun")
             status_live = st.selectbox("Status Pengujian", ["Pre-Shift", "Post-Shift", "Fatigue testing"], key="stat2")
 
-        st.markdown("#### ✂️ Pengaturan Jeda (Crop) Kamera Live")
+        st.markdown("#### ✂️ Pengaturan Durasi & Pemotongan Live Kamera")
         c1_L, c2_L, c3_L, c4_L = st.columns([2, 1, 2, 1])
-        val_start_L = c1_L.number_input("Jeda Awal (Jangan hitung di awal):", min_value=0.0, value=0.0, step=1.0, key="val_start_L")
+        val_start_L = c1_L.number_input("Mulai Analisis pada (Waktu Awal):", min_value=0.0, value=0.0, step=1.0, key="val_start_L")
         unit_start_L = c2_L.selectbox("Satuan Awal", ["Detik", "Menit"], key="unit_start_L")
-        val_end_L = c3_L.number_input("Jeda Akhir (Berhenti lebih cepat):", min_value=0.0, value=0.0, step=1.0, key="val_end_L")
-        unit_end_L = c4_L.selectbox("Satuan Akhir", ["Detik", "Menit"], key="unit_end_L")
+        val_end_L = c3_L.number_input("Berhenti Analisis pada (Waktu Akhir):", min_value=0.0, value=3.0, step=1.0, key="val_end_L")
+        unit_end_L = c4_L.selectbox("Satuan Akhir", ["Detik", "Menit"], index=1, key="unit_end_L")
+        st.caption("*Catatan: Jika waktu Akhir disetel angka 0, kamera akan menyala maksimal standar 3 menit (180 detik).*")
         
         crop_start_sec_live = val_start_L if unit_start_L == "Detik" else val_start_L * 60.0
         crop_end_sec_live = val_end_L if unit_end_L == "Detik" else val_end_L * 60.0
 
         st.markdown("---")
-        st.info("💡 **Langkah:** Pastikan data Anda terisi. Klik tombol **'START'** di bawah ini untuk mengizinkan kamera dan memulai waktu tes 3 Menit.")
+        st.info("💡 **Langkah:** Pastikan data Anda terisi. Klik tombol **'START'** di bawah ini untuk mengizinkan kamera dan memulai tes.")
 
         if "live_test_completed" not in st.session_state:
             st.session_state.live_test_completed = False
@@ -599,10 +622,16 @@ elif st.session_state.halaman == "analisis":
             dur_ui2 = m10.empty(); ms_ui2 = m11.empty()
 
         if ctx.state.playing and nama_live != "":
-            # Transfer konfigurasi crop ke dalam Processor Kamera
+            # Hitung total durasi maksimal untuk kamera menyala
+            stop_time_live = crop_end_sec_live if crop_end_sec_live > 0.0 else 180.0
+            if stop_time_live <= crop_start_sec_live:
+                stop_time_live = crop_start_sec_live + 180.0 # Pencegah eror logika
+            
+            # Transfer konfigurasi crop & screenshot ke dalam Processor WebRTC
             if ctx.video_processor:
                 ctx.video_processor.crop_start = crop_start_sec_live
-                ctx.video_processor.crop_end = crop_end_sec_live
+                ctx.video_processor.crop_end = stop_time_live
+                ctx.video_processor.nama_pegawai = nama_live
                 
             with yt_ph:
                 st.markdown(
@@ -617,17 +646,24 @@ elif st.session_state.halaman == "analisis":
                 
             while ctx.state.playing:
                 elapsed = time.time() - st.session_state.webrtc_start_time
-                if elapsed >= 180.0:
+                if elapsed >= stop_time_live:
                     if not st.session_state.live_test_completed:
                         st.session_state.live_test_completed = True
-                        excel_file = generate_excel_from_vp(ctx.video_processor, f"Laporan_Live_{nama_live}.xlsx", id_kerja_live, nama_live, jenis_kelamin_live, usia_live, status_live)
+                        
+                        img_path_for_excel = ctx.video_processor.thumbnail_path if ctx.video_processor else ""
+                        excel_file = generate_excel_from_vp(ctx.video_processor, f"Laporan_Live_{nama_live}.xlsx", id_kerja_live, nama_live, jenis_kelamin_live, usia_live, status_live, img_path_for_excel)
                         zip_name = f"Bukti_FFD_{nama_live}.zip"
+                        
                         with zipfile.ZipFile(zip_name, 'w') as zipf: zipf.write(excel_file)
                         st.session_state.live_zip_path = zip_name
+                        
+                        # Bersihkan file thumbnail/screenshot agar RAM tetap lega
+                        if img_path_for_excel and os.path.exists(img_path_for_excel):
+                            os.remove(img_path_for_excel)
                     break
                     
-                p_bar_elem.progress(min(elapsed / 180.0, 1.0))
-                p_text.markdown(f"**Progress: {int(elapsed)} / 180 Detik**")
+                p_bar_elem.progress(min(elapsed / stop_time_live, 1.0))
+                p_text.markdown(f"**Progress Kamera: {int(elapsed)} / {int(stop_time_live)} Detik**")
                 
                 vp = ctx.video_processor
                 if vp:
@@ -649,7 +685,7 @@ elif st.session_state.halaman == "analisis":
         if st.session_state.get("live_test_completed"):
             p_bar.progress(1.0)
             yt_ph.empty() 
-            st.success("✅ Sesi 3 Menit Selesai! Bukti Laporan (Excel) telah dibuat. Silakan klik STOP kamera.")
+            st.success("✅ Sesi Kamera Selesai! Bukti Laporan (Excel) telah dibuat. Silakan klik STOP kamera.")
             
         if st.session_state.get("live_test_completed") and st.session_state.get("live_zip_path"):
             with open(st.session_state.live_zip_path, "rb") as f:
