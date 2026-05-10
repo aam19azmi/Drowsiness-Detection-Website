@@ -34,7 +34,7 @@ NOSE_TIP = 1
 EAR_LOW = 0.20
 EAR_HIGH = 0.25
 EAR_P80 = 0.21
-MICROSLEEP_THRESH = 0.5
+MICROSLEEP_THRESH = 0.50 # Batas waktu microsleep (0.5 detik)
 MAR_THRESH = 0.50
 YAWN_MIN_TIME = 1.5
 SACCADE_THRESHOLD = 0.005
@@ -163,7 +163,6 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         self.thumbnail_saved = False
         self.thumbnail_path = ""
         
-        # Inisialisasi Perekam Video (Video Writer)
         self.video_writer = None
         self.video_out_name = ""
         
@@ -181,24 +180,20 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         
         elapsed_total = time.time() - self.start_time
 
-        # --- TAMPILAN JEDA ---
         if elapsed_total < self.crop_start:
             cv2.putText(bgr_out, f"MEMULAI DALAM: {int(self.crop_start - elapsed_total)}s", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             return av.VideoFrame.from_ndarray(bgr_out, format="bgr24")
             
         if elapsed_total > self.crop_end:
             cv2.putText(bgr_out, "ANALISIS SELESAI...", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            # Jika sudah selesai, tutup writer video agar tidak error
             if self.video_writer is not None:
                 self.video_writer.release()
                 self.video_writer = None
             return av.VideoFrame.from_ndarray(bgr_out, format="bgr24")
 
-        # --- INISIALISASI PEREKAM VIDEO (Hanya dieksekusi sekali saat masuk masa record) ---
         if self.video_writer is None:
             self.video_out_name = f"Rekaman_Live_{self.nama_pegawai}.mp4"
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            # Set resolusi 640x480 (atau menyesuaikan source camera) agar tidak membebani server
             resize_width = 640
             resize_height = int(height * (640.0 / width)) if width > 0 else 480
             self.video_writer = cv2.VideoWriter(self.video_out_name, fourcc, 15.0, (resize_width, resize_height))
@@ -257,10 +252,17 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         self.avg_blink_dur = sum(b['duration'] for b in self.blinks) / self.freq_kedipan if self.freq_kedipan > 0 else 0
         self.total_ms_live = sum(b['ms_flag'] for b in self.blinks)
 
+        # ========================================================
+        # KLASIFIKASI KELELAHAN BERDASARKAN LITERATUR ILMIAH
+        # Merujuk pada NHTSA PERCLOS Standard & Dinges et al.
+        # ========================================================
         self.status = "1 - FIT (Aman)"
-        if self.perclos_live >= 12 or self.total_ms_live > 0: self.status = "4 - BAHAYA (KRITIS)"
-        elif self.mcd_live >= 0.4 or self.perclos_live >= 10: self.status = "3 - LELAH (Risiko Tinggi)"
-        elif self.mcd_live >= 0.25 or self.perclos_live >= 5: self.status = "2 - KURANG FIT"
+        if self.total_ms_live > 0 or self.perclos_live >= 15.0 or self.mcd_live >= 0.45:
+            self.status = "4 - BAHAYA (KRITIS)"
+        elif self.perclos_live >= 10.0 or self.mcd_live >= 0.35:
+            self.status = "3 - LELAH (Risiko Tinggi)"
+        elif self.perclos_live >= 5.0 or self.mcd_live >= 0.25:
+            self.status = "2 - KURANG FIT"
 
         cv2.rectangle(bgr_out, (10, 10), (320, 240), (0, 0, 0), -1) 
         cv2.addWeighted(bgr_out, 0.6, img, 0.4, 0, bgr_out) 
@@ -278,7 +280,6 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         if self.total_ms_live > 0:
             cv2.putText(bgr_out, f"!!! MICROSLEEP DETECTED !!!", (20, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-        # Simpan bingkai (frame) ke dalam video MP4 setiap kali menggambar
         if self.video_writer is not None:
             resize_width = 640
             resize_height = int(height * (640.0 / width)) if width > 0 else 480
@@ -390,10 +391,17 @@ def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_
         avg_blink_dur = sum(b['duration'] for b in blinks) / freq_kedipan if freq_kedipan > 0 else 0
         total_ms_live = sum(b['ms_flag'] for b in blinks)
         
+        # ========================================================
+        # KLASIFIKASI KELELAHAN BERDASARKAN LITERATUR ILMIAH
+        # Merujuk pada NHTSA PERCLOS Standard & Dinges et al.
+        # ========================================================
         status = "1 - FIT (Aman)"
-        if perclos_live >= 12 or total_ms_live > 0: status = "4 - BAHAYA (KRITIS)"
-        elif mcd_live >= 0.4 or perclos_live >= 10: status = "3 - LELAH (Risiko Tinggi)"
-        elif mcd_live >= 0.25 or perclos_live >= 5: status = "2 - KURANG FIT"
+        if total_ms_live > 0 or perclos_live >= 15.0 or mcd_live >= 0.45:
+            status = "4 - BAHAYA (KRITIS)"
+        elif perclos_live >= 10.0 or mcd_live >= 0.35:
+            status = "3 - LELAH (Risiko Tinggi)"
+        elif perclos_live >= 5.0 or mcd_live >= 0.25:
+            status = "2 - KURANG FIT"
 
         bgr_out = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR) 
         cv2.rectangle(bgr_out, (10, 10), (320, 240), (0, 0, 0), -1) 
@@ -480,6 +488,18 @@ elif st.session_state.halaman == "analisis":
         st.rerun()
         
     st.title("🖥️ Modul Analisis FFD Operator")
+    
+    # Menambahkan Informasi Klasifikasi Ilmiah agar bisa dibaca oleh pengguna
+    with st.expander("📚 Dasar Penilaian Klasifikasi Kelelahan (Referensi Ilmiah)"):
+        st.markdown("""
+        Klasifikasi kelelahan pada sistem ini didasarkan pada standar pengujian keselamatan kerja internasional, parameter *NHTSA* (National Highway Traffic Safety Administration), dan studi *Dinges et al.* mengenai pengawasan PERCLOS:
+        
+        * **🟢 FIT (Aman):** `PERCLOS < 5%` dan `Durasi Kedipan Rata-rata (MCD) < 0.25 detik`. Operator berada dalam kondisi waspada tinggi.
+        * **🟡 KURANG FIT (Gejala Awal):** `PERCLOS 5% - 10%` ATAU `MCD 0.25s - 0.35s`. Mata mulai terasa berat dan respons berkedip mulai melambat.
+        * **🟠 LELAH (Risiko Tinggi):** `PERCLOS 10% - 15%` ATAU `MCD 0.35s - 0.45s`. Kewaspadaan menurun drastis, berisiko tinggi apabila dipaksakan mengoperasikan alat berat.
+        * **🔴 BAHAYA (KRITIS):** Terdapat kejadian **Microsleep** (mata tertutup total > 0.5 detik), ATAU `PERCLOS >= 15%`, ATAU `MCD >= 0.45s`. Operator dilarang bekerja dan wajib beristirahat.
+        """)
+
     tab1, tab2 = st.tabs(["📂 Upload Video (Ekspor Data)", "🌐 Live Kamera (WebRTC)"])
 
     # ------------------------------------------
@@ -535,6 +555,7 @@ elif st.session_state.halaman == "analisis":
                     vid_ph.image(frame, channels="RGB", use_container_width=True)
                     if "BAHAYA" in status: status_ui.error(f"🚨 **{status}**")
                     elif "LELAH" in status: status_ui.warning(f"⚠️ **{status}**")
+                    elif "KURANG FIT" in status: status_ui.info(f"👀 **{status}**")
                     else: status_ui.success(f"✅ **{status}**")
                         
                     perclos_ui.metric("PERCLOS", f"{perclos:.1f}%")
@@ -657,9 +678,10 @@ elif st.session_state.halaman == "analisis":
                 ctx.video_processor.crop_end = stop_time_live
                 ctx.video_processor.nama_pegawai = nama_live
                 
+            # Sinkronisasi Video Youtube menggunakan parameter &end agar putus persis dengan waktu stop_time_live
             with yt_ph:
                 st.markdown(
-                    """<iframe width="100%" height="400" src="https://www.youtube.com/embed/Se5NjX-cM5I?si=__OUHuj-V2w_wi4J&autoplay=1" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>""",
+                    f"""<iframe width="100%" height="400" src="https://www.youtube.com/embed/Se5NjX-cM5I?si=__OUHuj-V2w_wi4J&autoplay=1&end={int(stop_time_live)}" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>""",
                     unsafe_allow_html=True
                 )
             p_bar_elem = p_bar.progress(0)
@@ -670,6 +692,8 @@ elif st.session_state.halaman == "analisis":
                 
             while ctx.state.playing:
                 elapsed = time.time() - st.session_state.webrtc_start_time
+                
+                # Ketika target waktu tercapai
                 if elapsed >= stop_time_live:
                     if not st.session_state.live_test_completed:
                         st.session_state.live_test_completed = True
@@ -677,7 +701,6 @@ elif st.session_state.halaman == "analisis":
                         img_path_for_excel = ctx.video_processor.thumbnail_path if ctx.video_processor else ""
                         excel_file = generate_excel_from_vp(ctx.video_processor, f"Laporan_Live_{nama_live}.xlsx", id_kerja_live, nama_live, jenis_kelamin_live, usia_live, status_live, img_path_for_excel)
                         
-                        # Ambil path video MP4 yang baru saja direkam
                         video_live_path = ctx.video_processor.video_out_name if ctx.video_processor else ""
                         
                         zip_name = f"Bukti_FFD_{nama_live}.zip"
@@ -688,7 +711,7 @@ elif st.session_state.halaman == "analisis":
                                 
                         st.session_state.live_zip_path = zip_name
                         
-                        # Bersihkan RAM & Storage Server dari file mentah
+                        # Bersihkan memori server
                         if img_path_for_excel and os.path.exists(img_path_for_excel): os.remove(img_path_for_excel)
                         if os.path.exists(excel_file): os.remove(excel_file)
                         if video_live_path and os.path.exists(video_live_path): os.remove(video_live_path)
@@ -717,7 +740,7 @@ elif st.session_state.halaman == "analisis":
 
         if st.session_state.get("live_test_completed"):
             p_bar.progress(1.0)
-            yt_ph.empty() 
+            yt_ph.empty() # Menghilangkan iframe YouTube dari layar tepat saat tes selesai
             st.success("✅ Sesi Kamera Selesai! Bukti Laporan & Video Live telah dibuat. Silakan klik STOP kamera.")
             
         if st.session_state.get("live_test_completed") and st.session_state.get("live_zip_path"):
