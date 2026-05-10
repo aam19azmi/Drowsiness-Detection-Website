@@ -132,6 +132,11 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         self.start_time = time.time()
         self.total_bursts = 0
         
+        # Variabel Logika CROP (Jeda Analisis)
+        self.crop_start = 0.0
+        self.crop_end = 0.0
+        self.max_duration = 180.0
+        
         self.perclos_live = 0.0
         self.mcd_live = 0.0
         self.freq_kedipan = 0
@@ -142,12 +147,27 @@ class FFDWebRTCProcessor(VideoProcessorBase):
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         height, width, _ = img.shape
+        bgr_out = img.copy()
+        
+        elapsed_total = time.time() - self.start_time
+
+        # --- LOGIKA FITUR CROP (JEDA) LIVE ---
+        if elapsed_total < self.crop_start:
+            # Masa Tunggu (Crop Awal)
+            cv2.putText(bgr_out, f"MEMULAI ANALISIS DALAM: {int(self.crop_start - elapsed_total)}s", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            return av.VideoFrame.from_ndarray(bgr_out, format="bgr24")
+            
+        if elapsed_total > (self.max_duration - self.crop_end):
+            # Masa Berhenti Dini (Crop Akhir)
+            cv2.putText(bgr_out, "ANALISIS SELESAI (Crop Akhir Aktif)", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            return av.VideoFrame.from_ndarray(bgr_out, format="bgr24")
+        # -------------------------------------
+
         self.frame_count += 1
-        time_sec = time.time() - self.start_time
+        time_sec = elapsed_total - self.crop_start # Hitung murni waktu setelah crop
         
         rgb_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         results = self.face_mesh.process(rgb_frame)
-        bgr_out = img.copy()
 
         if results.multi_face_landmarks:
             landmarks = results.multi_face_landmarks[0].landmark
@@ -216,13 +236,17 @@ class FFDWebRTCProcessor(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(bgr_out, format="bgr24")
 
 # ==========================================
-# 4. FUNGSI UPLOAD VIDEO
+# 4. FUNGSI UPLOAD VIDEO (Optimasi RAM & Jaringan)
 # ==========================================
 def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_kelamin="-", usia=0, status_shift="Tidak Diketahui", crop_start=0.0, crop_end=0.0):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # OPTIMASI: Turunkan resolusi video ke 480p di awal untuk mencegah RAM meledak
+    orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    width = 640
+    height = int(orig_height * (640.0 / orig_width)) if orig_width > 0 else 480
     
     total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
     total_duration = total_frames / fps if fps > 0 else 0
@@ -257,6 +281,8 @@ def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_
         time_sec = frame_count / fps
         if crop_end > 0.0 and time_sec >= absolute_stop_time: break
 
+        # Resize untuk meringankan CPU
+        frame = cv2.resize(frame, (width, height))
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = face_mesh_up.process(rgb_frame)
 
@@ -324,7 +350,10 @@ def run_upload_analysis(video_path, id_kerja="-", nama_pegawai="Unknown", jenis_
         cv2.putText(bgr_out, f"MCD: {mcd_live:.3f}s", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         
         out_video.write(bgr_out) 
-        yield rgb_frame, status, perclos_live, mcd_live, freq_kedipan, avg_blink_dur, total_ms_live
+        
+        # OPTIMASI UI: Mengirimkan (yield) frame ke UI secara sepotong-sepotong (tiap 5 frame)
+        if frame_count % 5 == 0:
+            yield rgb_frame, status, perclos_live, mcd_live, freq_kedipan, avg_blink_dur, total_ms_live
 
     cap.release()
     out_video.release() 
@@ -447,6 +476,7 @@ elif st.session_state.halaman == "analisis":
                     if isinstance(frame, str) and frame == "DONE": 
                         excel_result = status; video_result = perclos; break
                         
+                    # Menggambar di Web hanya terjadi sebagian kali (Lebih Cepat!)
                     vid_ph.image(frame, channels="RGB", width="stretch")
                     if "BAHAYA" in status: status_ui.error(f"🚨 **{status}**")
                     elif "LELAH" in status: status_ui.warning(f"⚠️ **{status}**")
@@ -467,7 +497,7 @@ elif st.session_state.halaman == "analisis":
                     with open(zip_name_up, "rb") as f:
                         st.download_button("📦 Download Paket Bukti (ZIP)", data=f, file_name=zip_name_up, mime="application/zip")
                 
-                # PEMBERSIHAN MEMORI (MENCEGAH SERVER CRASH!)
+                # PEMBERSIHAN MEMORI
                 os.remove(tfile.name)
                 if os.path.exists(excel_result): os.remove(excel_result)
                 if os.path.exists(video_result): os.remove(video_result)
@@ -521,6 +551,16 @@ elif st.session_state.halaman == "analisis":
             st.caption(f"Usia saat ini: {usia_live} Tahun")
             status_live = st.selectbox("Status Pengujian", ["Pre-Shift", "Post-Shift", "Fatigue testing"], key="stat2")
 
+        st.markdown("#### ✂️ Pengaturan Jeda (Crop) Kamera Live")
+        c1_L, c2_L, c3_L, c4_L = st.columns([2, 1, 2, 1])
+        val_start_L = c1_L.number_input("Jeda Awal (Jangan hitung di awal):", min_value=0.0, value=0.0, step=1.0, key="val_start_L")
+        unit_start_L = c2_L.selectbox("Satuan Awal", ["Detik", "Menit"], key="unit_start_L")
+        val_end_L = c3_L.number_input("Jeda Akhir (Berhenti lebih cepat):", min_value=0.0, value=0.0, step=1.0, key="val_end_L")
+        unit_end_L = c4_L.selectbox("Satuan Akhir", ["Detik", "Menit"], key="unit_end_L")
+        
+        crop_start_sec_live = val_start_L if unit_start_L == "Detik" else val_start_L * 60.0
+        crop_end_sec_live = val_end_L if unit_end_L == "Detik" else val_end_L * 60.0
+
         st.markdown("---")
         st.info("💡 **Langkah:** Pastikan data Anda terisi. Klik tombol **'START'** di bawah ini untuk mengizinkan kamera dan memulai waktu tes 3 Menit.")
 
@@ -553,6 +593,11 @@ elif st.session_state.halaman == "analisis":
             dur_ui2 = m10.empty(); ms_ui2 = m11.empty()
 
         if ctx.state.playing and nama_live != "":
+            # Transfer konfigurasi crop ke dalam Processor Kamera
+            if ctx.video_processor:
+                ctx.video_processor.crop_start = crop_start_sec_live
+                ctx.video_processor.crop_end = crop_end_sec_live
+                
             with yt_ph:
                 st.markdown(
                     """<iframe width="100%" height="400" src="https://www.youtube.com/embed/Se5NjX-cM5I?si=__OUHuj-V2w_wi4J&autoplay=1" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>""",
